@@ -1,16 +1,8 @@
 #!/bin/bash
-DEBUG_MODE=0
+DEBUG_ARG=""
 
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --debug) DEBUG_MODE=1; shift ;;
-        *) echo "Unknown parameter: $1"; shift ;;
-    esac
-done
-
-output_dir="work_dirs/lup1m_solider-b_to_swin_small_from_cls_patch_moe"
-# output_dir="work_dirs/debug"
-if [ $DEBUG_MODE -eq 1 ]; then
+output_dir="work_dirs/lup1m_path-b_to_swin_tiny_from_cls_patch_moe"
+if [[ "$1" == "--debug" ]]; then
     echo "Running in debug mode"
     export CUDA_VISIBLE_DEVICES=0
     NPROC_PER_NODE=1
@@ -23,18 +15,17 @@ else
     DEBUG_ARG=""
 fi
 
-# output_dir="work_dirs/debug"
 if [ ! -d "$output_dir" ]; then
     mkdir -p "$output_dir"
 fi
 script_path=$(realpath "$0")
 cp "$script_path" "$output_dir/"
-cp "main_align_pretrain_moe_v2_swin.py" "$output_dir/"
+cp "main_align_pretrain_moe_swin.py" "$output_dir/"
 echo "start training"
 
-python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe_v2_swin.py $DEBUG_ARG \
-  --batch_size=128 --accum_iter=2 \
-  --model=saipv1_kd_swin_small_patch16_moeV2 \
+python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe_swin.py $DEBUG_ARG \
+  --batch_size=256 --accum_iter=1 \
+  --model=DPAL_kd_swin_tiny_patch16_moe \
   --data_path=data/LUP1M \
   --norm_pix_loss \
   --mask_ratio=0.75 \
@@ -50,7 +41,7 @@ python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_por
   --local_crops_scale 0.05 0.8 \
   --output_dir=$output_dir \
   --log_dir=$output_dir \
-  --teacher_model=ExpertSolider \
-  --teacher_pretrained='pretrained_models/solider/swin_base.pth' \
+  --teacher_model=expert_vit_base \
+  --teacher_pretrained='pretrained_models/humanbench_vit_base.pth' \
   --local_crops_number=2 \
-  --start_epoch=55 \
+  --start_epoch=0 \

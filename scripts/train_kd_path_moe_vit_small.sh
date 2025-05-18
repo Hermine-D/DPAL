@@ -1,16 +1,8 @@
 #!/bin/bash
-DEBUG_MODE=0
+DEBUG_ARG=""
 
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --debug) DEBUG_MODE=1; shift ;;
-        *) echo "Unknown parameter: $1"; shift ;;
-    esac
-done
-
-output_dir="work_dirs/lup1m_path-b_to_vit_tiny_from_cls_patch_atten_moe_v8_re"
-# output_dir="work_dirs/debug"
-if [ $DEBUG_MODE -eq 1 ]; then
+output_dir="work_dirs/lup1m_path-b_to_vit_small_from_cls_patch_moe"
+if [[ "$1" == "--debug" ]]; then
     echo "Running in debug mode"
     export CUDA_VISIBLE_DEVICES=0
     NPROC_PER_NODE=1
@@ -23,18 +15,17 @@ else
     DEBUG_ARG=""
 fi
 
-# output_dir="work_dirs/debug"
 if [ ! -d "$output_dir" ]; then
     mkdir -p "$output_dir"
 fi
 script_path=$(realpath "$0")
 cp "$script_path" "$output_dir/"
-cp "main_align_pretrain_moe_v2.py" "$output_dir/"
+cp "main_align_pretrain_moe.py" "$output_dir/"
 echo "start training"
 
-python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe_v2.py $DEBUG_ARG \
+python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe.py $DEBUG_ARG \
   --batch_size=256 --accum_iter=1 \
-  --model=saipv1_kd_vit_tiny_patch16_moeV2 \
+  --model=DPAL_kd_vit_small_patch16_moe \
   --data_path=data/LUP1M \
   --norm_pix_loss \
   --mask_ratio=0.75 \

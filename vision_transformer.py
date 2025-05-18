@@ -6,11 +6,6 @@ import torch.nn as nn
 import collections.abc as container_abcs
 from itertools import repeat
 from sapiens_vit import VisionTransformer as SapiensVisionTransformer
-from unihcp import ViT as Unihcp_vit
-from unihcp import recursive_update, NestedTensor
-from dinov2_layers import MemEffAttention
-from dinov2_layers import NestedTensorBlock
-from dinov2_vit import DinoVisionTransformer
 
 def _ntuple(n):
     def parse(x):
@@ -290,38 +285,8 @@ class ExpertViT(VisionTransformer):
         x = self.norm(x)
         
         return x, atten
-    
+
     def forward(self, base_imgs, meta):
-        bs = base_imgs.shape[0]
-        b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-        base_inputs = torch.cat([base_imgs, meta['aug_img']])
-        
-        outputs = {}
-            
-        b_feats, last_atten = self.forward_backbone(base_inputs)
-
-        outputs['feats_from_teacher'] = b_feats[:, 0, :]
-        outputs['feats_from_teacher_patch'] = b_feats[:, 1:, :]
-        outputs['qkv_atten'] =  last_atten
-        # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
-        return outputs
-    
-    # def forward(self, base_imgs):
-    #     bs = base_imgs.shape[0]
-    #     b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-    #     base_inputs = base_imgs
-        
-    #     outputs = {}
-            
-    #     b_feats, last_atten = self.forward_backbone(base_inputs)
-
-    #     outputs['feats_from_teacher'] = b_feats[:, 0, :]
-    #     outputs['feats_from_teacher_patch'] = b_feats[:, 1:, :]
-    #     outputs['qkv_atten'] =  last_atten
-    #     # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
-    #     return outputs
-
-    def forward_w_crowd(self, base_imgs, meta):
         bs = base_imgs.shape[0]
         msc_imgs = meta['region_imgs']
         b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
@@ -334,7 +299,7 @@ class ExpertViT(VisionTransformer):
         
         outputs = {}
         
-        #  单人大图
+        #  single-person
         b_feats, last_atten = self.forward_backbone(base_inputs)
         outputs['feats_from_teacher'] = list(torch.chunk(b_feats[:,:1,:], len_base_inputs, dim=0))
         outputs['feats_from_teacher_patch'] = list(torch.chunk(b_feats[:,1:,:], len_base_inputs, dim=0))
@@ -343,12 +308,11 @@ class ExpertViT(VisionTransformer):
         outputs['qkv_atten'] = []
         for i in range(len_base_inputs):
             outputs['qkv_atten'].append([qk_atten[i], vv_atten[i]])
-        # 多人大图
+        # multi-person
         b_feats, last_atten = self.forward_backbone(meta['crowd_imgs'])
-        # outputs['feats_from_teacher'].append(b_feats[:,0,:])
         outputs['feats_from_teacher_patch'].append(b_feats[:,1:,:])
         outputs['qkv_atten'].append(last_atten)
-        # # 单人小图
+        # # single-person
         # if msc_imgs:
         #     len_msc_imgs= len(msc_imgs)
         #     b_feats, last_atten = self.forward_backbone(torch.cat(msc_imgs))
@@ -361,190 +325,6 @@ class ExpertViT(VisionTransformer):
             
         return outputs
 
-class ExpertSapiens(SapiensVisionTransformer):
-    """ Sapiens Transformer """
-    def __init__(self, pretrained=None, **kwargs):
-        super().__init__(**kwargs)
-        self._init_from_pretrained(pretrained)
-
-    def _init_from_pretrained(self, pretrained=None):
-        if pretrained:
-            checkpoint_model = torch.load(pretrained, map_location='cpu')
-            if 'model' in checkpoint_model:
-                param_dict = checkpoint_model['model']
-            elif 'state_dict' in checkpoint_model:
-                param_dict = checkpoint_model['state_dict']
-            elif 'student' in checkpoint_model: ### for dino
-                print('load from student')
-                param_dict = checkpoint_model["student"]
-            else:
-                param_dict = checkpoint_model
-            param_dict = {k.replace("backbone.", ""): v for k, v in param_dict.items()}
-            param_dict = {k.replace("module.", ""): v for k, v in param_dict.items()}
-            self._prepare_pos_embed(param_dict, prefix='')
-            msg = self.load_state_dict(param_dict, strict=False)
-            print('Load from {}: {}'.format(pretrained, msg))
-
-    def forward_backbone(self, x):
-        # print('begin:',x.shape)
-        B = x.shape[0]
-
-        x, patch_resolution = self.patch_embed(x)
-        
-        if self.cls_token is not None:
-            cls_token = self.cls_token.expand(B, -1, -1)
-            x = torch.cat((cls_token, x), dim=1)
-        
-        x = x + self.resize_pos_embed(
-            self.pos_embed,
-            self.patch_resolution,
-            patch_resolution,
-            mode=self.interpolate_mode,
-            num_extra_tokens=self.num_extra_tokens)
-        x = self.drop_after_pos(x)
-
-        x = self.pre_norm(x) ## B x (num tokens) x embed_dim
-
-        for i, layer in enumerate(self.layers):
-            x, atten = layer(x)
-            if i == len(self.layers) - 1 and self.final_norm:
-                x = self.ln1(x)
-        
-        return x, atten
-    
-    def forward(self, base_imgs, meta, extract_regions=True):
-        bs = base_imgs.shape[0]
-        # b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-        if extract_regions:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-        else:
-            base_inputs = base_imgs
-        
-        outputs = {}
-            
-        b_feats, last_atten = self.forward_backbone(base_inputs)
-
-        outputs['feats_from_teacher'] = b_feats.mean(dim=1) # BUG
-        outputs['feats_from_teacher_patch'] = b_feats
-        outputs['qkv_atten'] =  last_atten
-        # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
-        return outputs
-    
-class ExpertUnihcp(Unihcp_vit):
-    def __init__(self, pretrained=None, **kwargs):
-        default = dict(
-            drop_path_rate=0.1, use_abs_pos_emb=True,  # as in table 11
-            ####
-            patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-            norm_layer=partial(nn.LayerNorm, eps=1e-6)
-        )
-        recursive_update(default, kwargs)
-        super().__init__(**default)
-        self._init_from_pretrained(pretrained)
-
-    def _init_from_pretrained(self, pretrained=None):
-        if pretrained:
-            script_dir = os.path.dirname(__file__)
-            checkpoint_model = torch.load(os.path.join(script_dir, pretrained), map_location='cpu')
-            if 'model' in checkpoint_model:
-                param_dict = checkpoint_model['model']
-            elif 'state_dict' in checkpoint_model:
-                param_dict = checkpoint_model['state_dict']
-            elif 'student' in checkpoint_model: ### for dino
-                print('load from student')
-                param_dict = checkpoint_model["student"]
-            else:
-                param_dict = checkpoint_model
-            new_param_dict = {}
-            for k, v in param_dict.items():
-                if "decoder_module" in k:
-                    continue
-                if "neck_module" in k:
-                    continue
-                new_key = k.replace("module.backbone_module.", "")
-                new_param_dict[new_key] = v
-            msg = self.load_state_dict(new_param_dict, strict=False)
-            print('Load from {}: {}'.format(pretrained, msg))
-            del checkpoint_model, param_dict
-
-    def forward(self, base_imgs, meta, extract_regions=True): 
-        # if isinstance(x, NestedTensor):
-        #     x, mask = x.decompose()
-        # else:
-        #     mask = None
-        bs = base_imgs.shape[0]
-        # b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-        if extract_regions:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-        else:
-            base_inputs = base_imgs
-        
-        outputs = {}
-            
-        b_feats, last_atten = self.forward_features(base_inputs)
-
-        outputs['feats_from_teacher'] = b_feats.mean(dim=1)
-        outputs['feats_from_teacher_patch'] = b_feats
-        outputs['qkv_atten'] =  last_atten
-        # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
-        return outputs
-
-class ExpertDinov2(DinoVisionTransformer):
-    def __init__(self, pretrained, **kwargs):
-        super().__init__(**kwargs)
-        ckpt = torch.load(pretrained, map_location='cpu')
-        # ckpt = {key.replace('blocks.', 'blocks.0.'):value for key, value in ckpt.items()}
-        missing_keys, unexpected_keys = self.load_state_dict(ckpt, strict=False)
-        print(f"Missing keys: {missing_keys}")
-        print(f"Unexpected keys: {unexpected_keys}")
-
-    def forward(self, base_imgs, meta, extract_regions=True): 
-        # if isinstance(x, NestedTensor):
-        #     x, mask = x.decompose()
-        # else:
-        #     mask = None
-        bs = base_imgs.shape[0]
-        # b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size[0], base_imgs.shape[3]//self.patch_embed.patch_size[1]
-        if extract_regions:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-        else:
-            base_inputs = base_imgs
-        
-        outputs = {}
-            
-        model_output = self.forward_features(base_inputs)
-
-        outputs['feats_from_teacher'] = model_output['x_norm_clstoken'] # [B, dim]
-        outputs['feats_from_teacher_patch'] = model_output['x_norm_patchtokens'] #.permute(0,2,1).reshape(bs, -1, b_ph, b_pw) # [B, num_patch, dim]
-        outputs['qkv_atten'] =  model_output['attention']
-        # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
-        return outputs
-    
-def vit_tiny(patch_size=16, **kwargs):
-    model = VisionTransformer(
-        patch_size=patch_size, embed_dim=192, depth=12, num_heads=6, mlp_ratio=4,
-        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-def kd_vit_tiny(patch_size=16, **kwargs):
-    model = VisionTransformer(
-        patch_size=patch_size, embed_dim=192, depth=12, num_heads=6, num_heads_in_last_block=12, mlp_ratio=4,
-        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-def vit_small(patch_size=16, **kwargs):
-    model = VisionTransformer(
-        patch_size=patch_size, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4,
-        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-
-def vit_base(patch_size=16, **kwargs):
-    model = VisionTransformer(
-        patch_size=patch_size, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4,
-        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
 ######################################## vit ########################################
 def expert_vit_base(patch_size=16, **kwargs):
     model = ExpertViT(
@@ -556,78 +336,6 @@ def expert_vit_large(patch_size=16, **kwargs):
     model = ExpertViT(
         patch_size=patch_size, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4, num_heads_in_last_block=16,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-######################################## sapiens ########################################
-def expert_sapiens_1b(patch_size=16, pretrained='', **kwargs):
-    model = ExpertSapiens(
-        arch='sapiens_1b', img_size=(1024, 768), patch_size=patch_size, qkv_bias=True, 
-        final_norm=True, drop_path_rate=0.0, with_cls_token=False, out_type='featmap', 
-        patch_cfg=dict(padding=2), pretrained=pretrained, 
-        **kwargs)
-    return model
-
-def expert_sapiens_0_3b(patch_size=16, pretrained='', **kwargs):
-    model = ExpertSapiens(
-        arch='sapiens_0.3b', img_size=(1024, 768), patch_size=patch_size, qkv_bias=True, 
-        final_norm=True, drop_path_rate=0.0, with_cls_token=False, out_type='featmap', 
-        patch_cfg=dict(padding=2), pretrained=pretrained, 
-        **kwargs)
-    return model
-
-######################################## unihcp ########################################
-def expert_unihcp(pretrained="pretrained_models/unihcp/ckpt_task0_iter_newest.pth.tar"):
-    model = ExpertUnihcp(task_sp_list=['rel_pos_h', 'rel_pos_w'], pretrained=pretrained, 
-        lms_checkpoint_train='fairscale', window=False, test_pos_mode='learnable_interpolate',
-        learnable_pos=True, drop_path_rate=0.2, img_size=1344)
-    return model
-
-######################################## dinov2 ########################################
-def expert_dinov2_large(pretrained='expert_dinov2_large'):
-    model = ExpertDinov2(pretrained=pretrained, model='dinov2_vitl14')
-    return model
-
-def expert_dinov2_base(pretrained='expert_dinov2_base'):
-    model = ExpertDinov2(pretrained=pretrained, img_size=518, patch_size=14, embed_dim=768,
-        depth=12, num_heads=12, mlp_ratio=4, block_fn=partial(NestedTensorBlock, attn_class=MemEffAttention), 
-        num_register_tokens=0, init_values=1.0, ffn_layer='mlp', block_chunks=0,
-        interpolate_antialias=False, interpolate_offset=0.1)
-    return model
-
-######################################## Path ##########################################
-# import PATH
-class ExpertPath(nn.Module):
-    def __init__(self, pretrained, model='', **kwargs):
-        super().__init__(**kwargs)
-        # self.model = torch.hub.load(pretrained, model)
-        self.model = PATH.vit_large_patch16_ladder_attention_share_pos_embed()
-        self.path_path='/home/wangxuanhan/data/research/vfm_research/learning_research/saipv2/pretrained_models/PATH/PATHl.pth'
-        self.model.load_state_dict(torch.load(self.path_path, map_location='cpu')['model'], strict=True)
-
-    def forward(self, base_imgs, meta, extract_regions=True): 
-        # if isinstance(x, NestedTensor):
-        #     x, mask = x.decompose()
-        # else:
-        #     mask = None
-        bs = base_imgs.shape[0]
-        # b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-        if extract_regions:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-        else:
-            base_inputs = base_imgs
-        
-        outputs = {}
-            
-        model_output = self.model(base_inputs, )#is_training=True)
-
-        outputs['feats_from_teacher'] = model_output['x_norm_clstoken'].unsqueeze(1) # [B, dim]
-        outputs['feats_from_teacher_patch'] = model_output['x_norm_patchtokens'] # [B, num_patch, dim]
-        # outputs['qkv_atten'] =  last_atten
-        # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
-        return outputs
-
-def expert_path_large(pretrained=''):
-    model = ExpertPath(pretrained=pretrained)
     return model
 
 ######################################## solider ##########################################
@@ -653,8 +361,6 @@ class ExpertSolider(nn.Module):
     def forward(self, base_imgs, meta):
         bs = base_imgs.shape[0]
         b_ph, b_pw = base_imgs.shape[2]//32, base_imgs.shape[3]//32
-        # b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-        # base_inputs = torch.cat([base_imgs, meta['aug_img']])
         base_inputs = base_imgs
         
         outputs = {}
@@ -665,7 +371,4 @@ class ExpertSolider(nn.Module):
         outputs['feats_from_teacher'] = [b_feats_global.unsqueeze(1)]
         outputs['feats_from_teacher_patch'] = [b_feats[-1].reshape(bs, 1024, b_ph*b_pw).permute(0,2,1)]
         outputs['qkv_atten'] =  last_atten
-        # outputs['last_atten'] = last_atten[0][:bs, :, 0, 1:].view(bs, -1, b_ph, b_pw)
         return outputs
-    
-    

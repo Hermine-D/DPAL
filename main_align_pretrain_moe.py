@@ -200,8 +200,6 @@ def main(args):
     student = models_pretrain.__dict__[args.model](img_size=(args.height, args.width))
     ema_teacher = models_pretrain.__dict__[args.model](img_size=(args.height, args.width))
 
-    # student.backbone.init_from_pretrain("pretrained_models/humanbench_vit_base.pth")
-
     teacher.to(device)
     student.to(device)
     ema_teacher.to(device)
@@ -235,9 +233,7 @@ def main(args):
         p.requires_grad = False
     print(f"Student and Teacher are built: student is {args.model} network and teacher is {args.teacher_model} network.")
 
-    csm_kd_loss = CSMKDLoss_wo_chunk_v2(
-        args.local_crops_number + 2
-    ).cuda()
+    csm_kd_loss = CSMKDLoss().cuda()
 
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
@@ -247,7 +243,6 @@ def main(args):
     momentum_schedule = cosine_scheduler(0.996, 1, args.epochs, len(data_loader_train))
     to_restore = {"epoch": 0}
     misc.restart_from_checkpoint(
-        # os.path.join("work_dirs/lupsub_csrm_300e_vit_tiny", "checkpoint.pth"),
         os.path.join(args.output_dir, "checkpoint.pth"),
         run_variables=to_restore,
         student=student,
@@ -304,8 +299,6 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
     accum_iter = args.accum_iter
 
     optimizer.zero_grad()
-    base_size = [(args.height,args.width), (256, 128), (224, 224)]
-    local_size = [(args.crop_height,args.crop_width), (128, 64), (96, 96)]
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -316,18 +309,6 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        # samples = samples.to(device, non_blocking=True)
-        target_size_idx = random.randint(0, len(base_size)-1)
-        
-        # for i, sms in enumerate(samples):
-        #     if target_size_idx==0:
-        #         samples[i] = sms.cuda(non_blocking=True)
-        #     else:
-        #         if i<2:
-        #             sms = torch.nn.functional.interpolate(sms.cuda(non_blocking=True), base_size[target_size_idx])
-        #         else:
-        #             sms = torch.nn.functional.interpolate(sms.cuda(non_blocking=True), local_size[target_size_idx])
-        #         samples[i] = sms
         samples = [sms.cuda(non_blocking=True) for sms in samples]
         meta = {}
         meta['mask_ratio'] = args.mask_ratio
@@ -337,25 +318,9 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
         else:
             meta['region_imgs'] = None
         meta['crowd_imgs'] = samples[-1]
-            
-        # #### 可视化
-        # n_images = len(samples)
-        # mean = np.array([0.485, 0.456, 0.406])
-        # std = np.array([0.229, 0.224, 0.225])
-        # denormalized_images = [tensor[0].cpu().numpy().transpose(1, 2, 0) * std + mean for tensor in samples]
-        # # denormalized_images = [np.clip(image, 0, 255).astype(np.uint8) for image in denormalized_images]
-        # fig, axes = plt.subplots(1, n_images, figsize=(15*n_images, 5))
-        # for i, ax in enumerate(axes):
-        #     ax.imshow(denormalized_images[i])
-        #     ax.axis('off')
-        #     ax.set_title(f"{denormalized_images[i].shape}")
-        # plt.tight_layout()
-        # plt.savefig("temp/visu/1.jpg")
-        # #### 结束可视化
 
         with torch.cuda.amp.autocast():
-            # with torch.autograd.detect_anomaly():
-            pred_t = teacher.forward_w_crowd(samples[0], meta)
+            pred_t = teacher.forward(samples[0], meta)
             pred_s, moe_loss, experts_loss = student(samples[0], meta)
             m_loss = csm_kd_loss(pred_s['aligned_cls_feats'], pred_s['aligned_patch_feats'], pred_s['qkv_atten'], pred_t['feats_from_teacher'], pred_t['feats_from_teacher_patch'], pred_t['qkv_atten'])
             # m_loss = csm_kd_loss(pred_s['aligned_cls_feats'], pred_s['qkv_atten'], pred_t['feats_from_teacher'].detach(), pred_t['qkv_atten'])
@@ -365,7 +330,6 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
                 m_loss['moe_loss'] = 0.01 * moe_loss
             m_loss['experts_loss'] = experts_loss
             loss = m_loss['align_rep_loss'] + m_loss['align_att_loss'] + m_loss['align_patch_loss'] + m_loss['moe_loss'] + m_loss['experts_loss']
-            # loss = m_loss['align_patch_loss'] + 0.0*m_loss['align_rep_loss'] + 0.0*m_loss['align_att_loss']
         
         loss_value = loss.item()
 
@@ -388,11 +352,7 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
                 param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
 
         torch.cuda.synchronize()
-        # metric_logger.update(loss=loss_value, align_rep_loss=m_loss['align_rep_loss'].item(), align_att_loss=100*m_loss['align_att_loss'].item())
-        # metric_logger.update(loss=loss_value, align_att_loss=100*m_loss['align_att_loss'].item())
         metric_logger.update(loss=loss_value, align_patch_loss=m_loss['align_patch_loss'].item(), align_rep_loss=m_loss['align_rep_loss'].item(), align_att_loss=m_loss['align_att_loss'].item(), moe_loss=m_loss['moe_loss'].item(), experts_loss=m_loss['experts_loss'].item())
-        # metric_logger.update(loss=loss_value, align_patch_loss=m_loss['align_patch_loss'].item(), align_rep_loss=m_loss['align_rep_loss'].item(), align_att_loss=m_loss['align_att_loss'].item(), moe_loss=m_loss['moe_loss'].item())
-        # metric_logger.update(loss=loss_value, align_patch_loss=m_loss['align_patch_loss'].item())
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr)
 
@@ -426,12 +386,12 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
 
 class DataAugmentationV1(object):
     def __init__(self, size, crop_size, global_crops_scale, local_crops_scale, local_crops_number, ref_size=(256, 256)):
-        # ref_oimage_path='/mnt/hdd4/zhangshuai/data/pretrain_dataset/train/others'
-        # self.list_ref_oimg_files = []
-        # for file in os.listdir(ref_oimage_path):
-        #     file_path = os.path.join(ref_oimage_path, file)
-        #     self.list_ref_oimg_files.append(file_path)
-        # self.num_ref_obj = len(self.list_ref_oimg_files)
+        ref_oimage_path='/mnt/hdd4/zhangshuai/data/pretrain_dataset/train/others'
+        self.list_ref_oimg_files = []
+        for file in os.listdir(ref_oimage_path):
+            file_path = os.path.join(ref_oimage_path, file)
+            self.list_ref_oimg_files.append(file_path)
+        self.num_ref_obj = len(self.list_ref_oimg_files)
 
         flip_and_color_jitter = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
@@ -494,8 +454,6 @@ class DataAugmentationV1(object):
 
         multi_scales = []
         aug_img_1 = self.global_transform(image)
-        # aug_img_2 = torch.nn.functional.interpolate(aug_img_1.unsqueeze(0), scale_factor=2).squeeze(0)
-        # aug_img_2 = self.global_transfo2(image)
         multi_scales.append(aug_img_1)
         # multi_scales.append(aug_img_2)
 
@@ -633,168 +591,10 @@ class DataAugmentation(object):
         multi_scales.append(obj_img)
 
         return multi_scales
-    
-class CSMKDLossV1(nn.Module):
-    def __init__(self, ncrops):
-        super().__init__()
-        self.ncrops = ncrops
-
-    def forward(self, s_feats, s_feats_patch, s_atten, t_feats, t_feats_patch,t_atten):
-      
-        s_feats = s_feats.chunk(self.ncrops)
-        s_feats_patch = s_feats_patch.chunk(2)
-        t_feats = t_feats.detach().chunk(2)
-        t_feats_patch = t_feats_patch.detach().chunk(2)
-
-        s_qk_atten, s_vv_atten = s_atten
-        s_qk_atten = s_qk_atten.chunk(2)
-        s_vv_atten = s_vv_atten.chunk(2)
-        
-        t_qk_atten, t_vv_atten = t_atten
-        t_qk_atten = t_qk_atten.detach().chunk(2)
-        t_vv_atten = t_vv_atten.detach().chunk(2)
-
-        rep_sim_loss = 0
-        n_rep_loss_terms = 0
-        att_sim_loss = 0
-        n_att_loss_terms = 0
-        for iq, q in enumerate(t_feats):
-            for v in range(len(s_feats)):
-                if v < 2 and v == iq:
-                    # print(s_qk_atten[v].shape, t_qk_atten[iq].shape)
-                    i_s_qk_atten = s_qk_atten[v].log()
-                    i_s_vv_atten = s_vv_atten[v].log()
-                    # if s_qk_atten[v].shape != t_qk_atten[iq].shape:
-                    #     i_s_qk_atten = F.interpolate(i_s_qk_atten, size=t_qk_atten[iq].shape[-2:])
-                    #     i_s_vv_atten = F.interpolate(i_s_vv_atten, size=t_qk_atten[iq].shape[-2:])
-                    qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_atten, t_qk_atten[iq]).sum(-1)
-                    vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_atten, t_vv_atten[iq]).sum(-1)
-                    qk_loss = qk_loss.mean()
-                    vv_loss = vv_loss.mean()
-                    if not math.isfinite(qk_loss.item()):
-                        qk_loss = 0. * i_s_qk_atten.mean()
-                    if not math.isfinite(vv_loss.item()):
-                        vv_loss = 0. * i_s_vv_atten.mean()
-                    att_sim_loss += (qk_loss + vv_loss)           
-                    n_att_loss_terms += 1
-
-                    # norm_s = torch.nn.functional.normalize(s_feats_patch[v], dim=-1)
-                    # norm_t = torch.nn.functional.normalize(t_feats_patch[iq], dim=-1)
-                    # rep_sim_loss += torch.mean((-(norm_s * norm_t).sum(dim=-1)))
-                    n_rep_loss_terms += 1
-                # else:
-                #     norm_s = torch.nn.functional.normalize(s_feats[v],dim=-1)
-                #     norm_t = torch.nn.functional.normalize(q, dim=-1)
-                #     rep_sim_loss += torch.mean((-(norm_s * norm_t).sum(dim=-1)))
-                #     n_rep_loss_terms += 1
-        rep_sim_loss /= n_rep_loss_terms
-        att_sim_loss /= n_att_loss_terms
-        
-        return {'align_rep_loss':rep_sim_loss,  'align_att_loss':att_sim_loss}
 
 class CSMKDLoss(nn.Module):
-    def __init__(self, ncrops):
+    def __init__(self):
         super().__init__()
-        self.ncrops = ncrops
-
-    def forward(self, s_feats, s_feats_patch, s_atten, t_feats, t_feats_patch,t_atten):
-      
-        s_feats = s_feats.chunk(self.ncrops)
-        s_feats_patch = s_feats_patch.chunk(2)
-        t_feats = t_feats.detach().chunk(2)
-        t_feats_patch = t_feats_patch.detach().chunk(2)
-
-        s_qk_atten, s_vv_atten = s_atten
-        s_qk_atten = s_qk_atten.chunk(2)
-        s_vv_atten = s_vv_atten.chunk(2)
-        
-        t_qk_atten, t_vv_atten = t_atten
-        t_qk_atten = t_qk_atten.detach().chunk(2)
-        t_vv_atten = t_vv_atten.detach().chunk(2)
-
-        rep_sim_cls_loss = torch.Tensor([0]).cuda()
-        rep_sim_patch_loss = torch.Tensor([0]).cuda()
-        n_rep_cls_loss_terms = 0
-        n_rep_patch_loss_terms = 0
-        att_sim_loss = torch.Tensor([0]).cuda()
-        n_att_loss_terms = 0
-        for iq, q in enumerate(t_feats):
-            for v in range(len(s_feats)):
-                if v < 2 and v == iq:
-                    i_s_qk_atten = s_qk_atten[v].log()
-                    i_s_vv_atten = s_vv_atten[v].log()
-                    if s_qk_atten[v].shape != t_qk_atten[iq].shape:
-                        i_s_qk_atten = F.interpolate(i_s_qk_atten, size=t_qk_atten[iq].shape[-2:])
-                        i_s_vv_atten = F.interpolate(i_s_vv_atten, size=t_qk_atten[iq].shape[-2:])
-                    qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_atten, t_qk_atten[iq]).sum(-1)
-                    vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_atten, t_vv_atten[iq]).sum(-1)
-                    att_sim_loss += (qk_loss.mean() + vv_loss.mean())
-                    n_att_loss_terms += 1
-        
-                    # s_feats_patch_v = s_feats_patch[v]
-
-                    # if s_feats_patch_v.shape != t_feats_patch[iq].shape:
-                    #     s_feats_patch_v =  F.interpolate(s_feats_patch_v, size=t_feats_patch[iq].shape[-2:])
-
-                    # rep_sim_patch_loss += F.huber_loss(s_feats_patch_v, t_feats_patch[iq])#.mean(-1).mean()
-                    rep_sim_patch_loss += nn.MSELoss(reduction="none")(s_feats_patch[v], t_feats_patch[iq]).mean(-1).mean()
-                    n_rep_patch_loss_terms += 1
-                else:
-                    loss = nn.MSELoss(reduction="none")(s_feats[v], q).mean(-1)
-                    rep_sim_cls_loss += loss.mean()
-                    n_rep_cls_loss_terms += 1
-        rep_sim_cls_loss /= n_rep_cls_loss_terms
-        rep_sim_patch_loss /= n_rep_patch_loss_terms
-        att_sim_loss /= n_att_loss_terms
-        
-        return {'align_rep_loss':rep_sim_cls_loss, 'align_patch_loss':0.1*rep_sim_patch_loss, 'align_att_loss':0.1*att_sim_loss}
-    
-class CSMKDLoss_wo_chunk(nn.Module):
-    def __init__(self, ncrops):
-        super().__init__()
-        self.ncrops = ncrops
-
-    def forward(self, s_feats, s_feats_patch, s_atten, t_feats, t_feats_patch, t_atten):
-
-        rep_sim_cls_loss = torch.Tensor([0]).cuda()
-        rep_sim_patch_loss = torch.Tensor([0]).cuda()
-        n_rep_cls_loss_terms = 0
-        n_rep_patch_loss_terms = 0
-        att_sim_loss = torch.Tensor([0]).cuda()
-        n_att_loss_terms = 0
-        for iq, q in enumerate(t_feats): # 单人大图 多人大图 单人小图
-            for v in range(len(s_feats)):
-                if v < 2 and v == iq: # 相同的图片对齐cls patch atten
-                    s_qk_atten, s_vv_atten = s_atten[v]
-                    t_qk_atten, t_vv_atten = t_atten[iq]
-                    i_s_qk_atten = s_qk_atten[v].log()
-                    i_s_vv_atten = s_vv_atten[v].log()
-                    qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_atten, t_qk_atten[iq]).sum(-1)
-                    vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_atten, t_vv_atten[iq]).sum(-1)
-                    att_sim_loss += (qk_loss.mean() + vv_loss.mean())
-                    n_att_loss_terms += 1
-
-                    rep_sim_patch_loss += nn.MSELoss(reduction="none")(s_feats_patch[v], t_feats_patch[iq]).mean(-1).mean()
-                    n_rep_patch_loss_terms += 1
-
-                    loss = nn.MSELoss(reduction="none")(s_feats[v], q).mean(-1)
-                    rep_sim_cls_loss += loss.mean()
-                    n_rep_cls_loss_terms += 1
-                elif iq == 0 and v != 1: # 教师的单人大图 和 学生单人小图的对齐
-                    loss = nn.MSELoss(reduction="none")(s_feats[v], q).mean(-1)
-                    rep_sim_cls_loss += loss.mean()
-                    n_rep_cls_loss_terms += 1
-                    
-        rep_sim_cls_loss /= n_rep_cls_loss_terms
-        rep_sim_patch_loss /= n_rep_patch_loss_terms
-        att_sim_loss /= n_att_loss_terms
-        
-        return {'align_rep_loss':rep_sim_cls_loss, 'align_patch_loss':0.1*rep_sim_patch_loss, 'align_att_loss':0.1*att_sim_loss}
-    
-class CSMKDLoss_wo_chunk_v2(nn.Module):
-    def __init__(self, ncrops):
-        super().__init__()
-        self.ncrops = ncrops
 
     def forward(self, s_feats, s_feats_patch, s_atten, t_feats, t_feats_patch, t_atten):
         rep_sim_cls_loss = torch.Tensor([0]).cuda()
@@ -849,58 +649,6 @@ class CSMKDLoss_wo_chunk_v2(nn.Module):
             att_sim_loss /= n_att_loss_terms
         
         return {'align_rep_loss':rep_sim_cls_loss, 'align_patch_loss':0.1*rep_sim_patch_loss, 'align_att_loss':0.1*att_sim_loss}
-    
-class CSMKDLossv2(nn.Module):
-    def __init__(self, ncrops):
-        super().__init__()
-        self.ncrops = ncrops
-
-    def forward(self, s_feats, s_atten, t_feats, t_atten):
-      
-        s_feats = s_feats.chunk(self.ncrops)
-        s_feats_patch = s_feats_patch.chunk(2)
-        t_feats = t_feats.detach().chunk(2)
-        t_feats_patch = t_feats_patch.detach().chunk(2)
-
-        s_qk_atten, s_vv_atten = s_atten
-        s_qk_atten = s_qk_atten.chunk(2)
-        s_vv_atten = s_vv_atten.chunk(2)
-        
-        t_qk_atten, t_vv_atten = t_atten
-        t_qk_atten = t_qk_atten.detach().chunk(2)
-        t_vv_atten = t_vv_atten.detach().chunk(2)
-
-        rep_sim_loss = 0
-        n_rep_loss_terms = 0
-        att_sim_loss = 0
-        n_att_loss_terms = 0
-        for iq, q in enumerate(t_feats):
-            for v in range(len(s_feats)):
-                if v < 2 and v == iq:
-                    # print(s_qk_atten[v].shape, t_qk_atten[iq].shape)
-                    i_s_qk_atten = s_qk_atten[v].log()
-                    i_s_vv_atten = s_vv_atten[v].log()
-                    if s_qk_atten[v].shape != t_qk_atten[iq].shape:
-                        i_s_qk_atten = F.interpolate(i_s_qk_atten, size=t_qk_atten[iq].shape[-2:])
-                        i_s_vv_atten = F.interpolate(i_s_vv_atten, size=t_qk_atten[iq].shape[-2:])
-                    qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_atten, t_qk_atten[iq]).sum(-1)
-                    vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_atten, t_vv_atten[iq]).sum(-1)
-                    # qk_loss = qk_loss.mean()
-                    # vv_loss = vv_loss.mean()
-                    # if not math.isfinite(qk_loss.item()):
-                    #     qk_loss = 0. * i_s_qk_atten.mean()
-                    # if not math.isfinite(vv_loss.item()):
-                    #     vv_loss = 0. * i_s_vv_atten.mean()
-                    att_sim_loss += (qk_loss.mean() + vv_loss.mean())
-                    n_att_loss_terms += 1
-                else:
-                    loss = nn.MSELoss(reduction="none")(s_feats[v], q).mean(-1)
-                    rep_sim_loss += loss.mean()
-                    n_rep_loss_terms += 1
-        rep_sim_loss /= n_rep_loss_terms
-        att_sim_loss /= n_att_loss_terms
-        
-        return {'align_rep_loss':rep_sim_loss,  'align_att_loss':0.1*att_sim_loss}
     
 if __name__ == '__main__':
     args = get_args_parser()
