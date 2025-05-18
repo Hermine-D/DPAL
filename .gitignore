@@ -1,0 +1,13 @@
+pretrained_models
+data
+work_dirs
+temp
+.vscode
+
+1.py
+
+preprocessing_theia/__pycache__/*
+preprocessing/__pycache__/*
+dinov2_layers/__pycache__/*
+__pycache__/*
+util/__pycache__/*
