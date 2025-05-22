@@ -321,7 +321,6 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
             pred_t = teacher.forward(samples[0], meta)
             pred_s, moe_loss, experts_loss = student(samples[0], meta)
             m_loss = csm_kd_loss(pred_s['aligned_cls_feats'], pred_s['aligned_patch_feats'], pred_s['qkv_atten'], pred_t['feats_from_teacher'], pred_t['feats_from_teacher_patch'], pred_t['qkv_atten'])
-            # m_loss = csm_kd_loss(pred_s['aligned_cls_feats'], pred_s['qkv_atten'], pred_t['feats_from_teacher'].detach(), pred_t['qkv_atten'])
             if epoch < 20:
                 m_loss['moe_loss'] = 0.1 * moe_loss # 0.1
             else:
@@ -491,7 +490,7 @@ class CSMKDLoss(nn.Module):
         att_sim_loss = torch.Tensor([0]).cuda()
         n_att_loss_terms = 0
         # cls
-        for t_feat in t_feats: # 1单大
+        for t_feat in t_feats: # 1 single
             for s_feat in s_feats: # n+1
                 loss = nn.MSELoss(reduction="none")(s_feat, t_feat).mean(-1).mean()
                 # if not math.isfinite(loss.item()):
@@ -500,7 +499,7 @@ class CSMKDLoss(nn.Module):
                 n_rep_cls_loss_terms += 1
         # patch + atten
         res = [(256,128),(256,256)]
-        for iq in range(len(t_feats_patch)): # 1单大 + 1多大
+        for iq in range(len(t_feats_patch)): # 1 single + 1 multi
             if s_atten and t_atten:
                 s_qk_atten, s_vv_atten = s_atten[iq]
                 t_qk_atten, t_vv_atten = t_atten[iq]

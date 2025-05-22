@@ -24,7 +24,7 @@ cp "main_align_pretrain_moe.py" "$output_dir/"
 echo "start training"
 
 python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe.py $DEBUG_ARG \
-  --batch_size=128 --accum_iter=2 \
+  --batch_size=256 --accum_iter=1 \
   --model=DPAL_kd_vit_tiny_patch16_moe_path_large \
   --data_path=data/LUP1M \
   --norm_pix_loss \

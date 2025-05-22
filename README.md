@@ -8,7 +8,7 @@ With these two deliberate designs, the DPAL effectively guides lightweight model
 Extensive experiments conducted on 12 challenging datasets demonstrate the effectiveness of the DPAL. Remarkably, when employing PATH-B as the teacher, DPAL-ViT/Ti (5M parameters) achieves surprising generalizability similar to existing large HVMs such as PATH-B (84M) and Sapiens-L (140M), and outperforms previous distillation-based pretraining methods including Proteus-ViT/Ti (5M) and TinyMiM-ViT/Ti (5M) by a large margin. More importantly, the DPAL is performed on a limited dataset (i.e., around 1M unlabeled images) that is unseen for large HVMs, which bypasses the need for those inaccessible or constrained pretraining datasets, offering an affordable approach to generalizable HVMs. 
 
 <div style="text-align: center;">
-  <img src="./asserts/framework.png" alt="framework" width="800" />
+  <img src="asserts/framework.png" alt="framework" width="800" />
 </div>
 
 ## 🛠️ Installation

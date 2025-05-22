@@ -5,7 +5,6 @@ import torch.nn as nn
 
 import collections.abc as container_abcs
 from itertools import repeat
-from sapiens_vit import VisionTransformer as SapiensVisionTransformer
 
 def _ntuple(n):
     def parse(x):
@@ -319,38 +318,3 @@ def expert_vit_large(patch_size=16, **kwargs):
         patch_size=patch_size, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4, num_heads_in_last_block=16,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
-
-######################################## solider ##########################################
-from swin_transformer import SwinTransformer
-
-class ExpertSolider(nn.Module):
-    def __init__(self, img_size=224,drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0., pretrained=None, **kwargs):
-        super().__init__()
-        self.model = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32), drop_path_rate=0.1, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, **kwargs)
-        ckpt = torch.load(pretrained, map_location='cpu')['student']
-        new_ckpt = {}
-        for k, v in ckpt.items():
-            if "decoder_module" in k:
-                continue
-            if "neck_module" in k:
-                continue
-            new_key = k.replace("module.backbone.", "")
-            new_ckpt[new_key] = v
-        missing_keys, unexpected_keys = self.model.load_state_dict(new_ckpt, strict=False)
-        print(f"Missing keys: {missing_keys}")
-        print(f"Unexpected keys: {unexpected_keys}")
-    
-    def forward(self, base_imgs, meta):
-        bs = base_imgs.shape[0]
-        b_ph, b_pw = base_imgs.shape[2]//32, base_imgs.shape[3]//32
-        base_inputs = base_imgs
-        
-        outputs = {}
-            
-        b_feats_global, b_feats = self.model(base_inputs)
-        last_atten = None
-
-        outputs['feats_from_teacher'] = [b_feats_global.unsqueeze(1)]
-        outputs['feats_from_teacher_patch'] = [b_feats[-1].reshape(bs, 1024, b_ph*b_pw).permute(0,2,1)]
-        outputs['qkv_atten'] =  last_atten
-        return outputs
