@@ -4,9 +4,37 @@ import torch
 import torch.nn as nn
 import random
 from vision_transformer import Block
-from pretrain_moe_decoder import LossMOEDecoder, LossMOEDecoderV2
+from pretrain_moe_decoder import LossMOEDecoder
 from mmpretrain.models import VisionTransformer
 from einops import rearrange
+
+def interpolate_pos_encoding(x, pos_embed, npatch, with_cls_token=True):
+        # npatch = x.shape[1] - 1 if with_cls_token else x.shape[1]
+        N = pos_embed.shape[1] - 1 if with_cls_token else pos_embed.shape[1]
+        if npatch == N:
+            return pos_embed
+        if with_cls_token:
+            class_pos_embed = pos_embed[:, 0]
+            patch_pos_embed = pos_embed[:, 1:]
+        else:
+            patch_pos_embed = pos_embed
+        dim = x.shape[-1]
+        #  h0 = h // self.patch_embed.patch_size
+        #  w0 = w // self.patch_embed.patch_size
+        #  w0, h0 = w0 + 0.1, h0 + 0.1
+        L = npatch
+        
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed.reshape(1, N, 1, dim).permute(0, 3, 1, 2),
+            size=(L, 1),
+            # scale_factor=(L / N, 1),
+            mode='bicubic',
+        )
+        assert L == patch_pos_embed.shape[2],"{} vs {}".format(L, patch_pos_embed.shape[2])
+        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
+        if with_cls_token:
+            patch_pos_embed = torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
+        return patch_pos_embed
 
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -295,15 +323,9 @@ class DPALKDViTMOEWrapper(nn.Module):
         self.adapter = LossMOEDecoder(**args)
     
     def forward(self, base_imgs, meta):
-        B,_,_,_ = base_imgs.shape
         msc_imgs = meta['region_imgs']
-
-        if meta['aug_img'] is not None:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-            len_base_inputs = 2
-        else:
-            base_inputs = base_imgs
-            len_base_inputs = 1
+        base_inputs = base_imgs
+        len_base_inputs = 1
         
         outputs = {}
         moe_loss = torch.Tensor([0]).cuda()
@@ -370,18 +392,14 @@ class DPALKDSWINMOEWrapper(nn.Module):
             self.backbone = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24), drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0)
         elif backbone == "swin_small":
             self.backbone = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=96, depths=(2, 2, 18, 2), num_heads=(3, 6, 12, 24), drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0)
-        self.adapter = LossMOEDecoderV2(**args)
+        self.adapter = LossMOEDecoder(**args)
     
     def forward(self, base_imgs, meta):
         B,_,_,_ = base_imgs.shape
         msc_imgs = meta['region_imgs']
 
-        if meta['aug_img'] is not None:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-            len_base_inputs = 2
-        else:
-            base_inputs = base_imgs
-            len_base_inputs = 1
+        base_inputs = base_imgs
+        len_base_inputs = 1
         
         outputs = {}
         moe_loss = torch.Tensor([0]).cuda()
@@ -403,7 +421,8 @@ class DPALKDSWINMOEWrapper(nn.Module):
         num_aux_loss += 1
         aligned_patch_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
         # ########## Multi-person patch
-        b_feats = self.backbone(meta['crowd_imgs'])
+        avg_pool, patch = self.backbone.forward_student(meta['crowd_imgs'])
+        b_feats = torch.cat([avg_pool.unsqueeze(1), patch[-1].reshape(B, 768, (256//32)*(256//32)).permute(0,2,1)], dim=1)
         # patch
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[:,1:,:], target_expert=2)
         moe_loss += aux_loss
@@ -460,17 +479,15 @@ def DPAL_kd_vit_base_patch16_moe_path_large(**kwargs):
     model = DPALKDViTMOEWrapper(patch_size=(16, 16), embed_dim=768, depth=12, 
         num_heads=12, num_heads_in_last_block=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), 
-        align_num_heads=16, out_dim=1024, **kwargs)
+        align_num_heads=16, out_dim=1024, inter_dim=192, **kwargs)
     return model
 
 ########## swin_tiny
 def DPAL_kd_swin_tiny_patch16_moe(**kwargs):
-    model = DPALKDSWINMOEWrapper(backbone = "swin_tiny", embed_dim=384, mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        align_num_heads=16, **kwargs)
+    model = DPALKDSWINMOEWrapper(backbone = "swin_tiny", embed_dim=768, mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), align_num_heads=16, inter_dim=192, **kwargs)
     return model
 
 ########## swin_small
 def DPAL_kd_swin_small_patch16_moe(**kwargs):
-    model = DPALKDSWINMOEWrapper(backbone = "swin_small", embed_dim=192, mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        align_num_heads=16, **kwargs)
+    model = DPALKDSWINMOEWrapper(backbone = "swin_small", embed_dim=768, mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), align_num_heads=16, inter_dim=192, **kwargs)
     return model

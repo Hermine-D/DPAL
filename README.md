@@ -46,15 +46,3 @@ bash scripts/train_kd_path_moe_swin_small.sh
 ```sh
 bash scripts/train_kd_path_large_moe_vit_tiny.sh
 ```
-### Distill PATH-L to ViT-B.
-```sh
-bash scripts/train_kd_path_large_moe_vit_base.sh
-```
-### Distill SOLIDER-B to Swin-Ti.
-```sh
-bash scripts/train_kd_solider_moe_swin_tiny.sh
-```
-### Distill SOLIDER-B to Swin-S.
-```sh
-bash scripts/train_kd_solider_moe_swin_small.sh
-```

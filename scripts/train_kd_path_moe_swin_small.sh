@@ -20,11 +20,11 @@ if [ ! -d "$output_dir" ]; then
 fi
 script_path=$(realpath "$0")
 cp "$script_path" "$output_dir/"
-cp "main_align_pretrain_moe_swin.py" "$output_dir/"
+cp "main_align_pretrain_moe.py" "$output_dir/"
 echo "start training"
 
-python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe_swin.py $DEBUG_ARG \
-  --batch_size=128 --accum_iter=2 \
+python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE --master_port=29600 main_align_pretrain_moe.py $DEBUG_ARG \
+  --batch_size=256 --accum_iter=1 \
   --model=DPAL_kd_swin_small_patch16_moe \
   --data_path=data/LUP1M \
   --norm_pix_loss \

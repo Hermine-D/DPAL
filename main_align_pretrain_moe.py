@@ -147,10 +147,10 @@ def main(args):
     misc.init_distributed_mode(args)
     if args.debug and misc.get_rank() == 0:
         import debugpy
-        debugpy.listen(("localhost", 1234)) # 指定主机和端口
+        debugpy.listen(("localhost", 1234))
         print("Waiting for debugger to attach...")
-        debugpy.wait_for_client() # 等待 VSCode 连接
-        debugpy.breakpoint() # 设置断点
+        debugpy.wait_for_client()
+        debugpy.breakpoint()
         print("Debugger is attached.")
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -169,7 +169,7 @@ def main(args):
         (args.crop_height,args.crop_width),
         args.global_crops_scale,
         args.local_crops_scale,
-        args.local_crops_number) # DataAugmentationV1删掉了多人
+        args.local_crops_number)
     dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)
 
@@ -311,8 +311,6 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
 
         samples = [sms.cuda(non_blocking=True) for sms in samples]
         meta = {}
-        meta['mask_ratio'] = args.mask_ratio
-        meta['aug_img'] = None # samples[1]
         if args.local_crops_number>0:
             meta['region_imgs'] = samples[1:1+args.local_crops_number]
         else:
@@ -384,9 +382,9 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
     assert len(schedule) == epochs * niter_per_ep
     return schedule
 
-class DataAugmentationV1(object):
+class DataAugmentation(object):
     def __init__(self, size, crop_size, global_crops_scale, local_crops_scale, local_crops_number, ref_size=(256, 256)):
-        ref_oimage_path='/mnt/hdd4/zhangshuai/data/pretrain_dataset/train/others'
+        ref_oimage_path='./data/pretrain_dataset/train/others'
         self.list_ref_oimg_files = []
         for file in os.listdir(ref_oimage_path):
             file_path = os.path.join(ref_oimage_path, file)
@@ -455,139 +453,28 @@ class DataAugmentationV1(object):
         multi_scales = []
         aug_img_1 = self.global_transform(image)
         multi_scales.append(aug_img_1)
-        # multi_scales.append(aug_img_2)
 
         for _ in range(self.local_crops_number):
             multi_scales.append(self.local_transfo(image))
-        # region_img = torch.nn.functional.interpolate(aug_img_1.unsqueeze(0), size=self.region_size).squeeze(0)
-        # multi_scales.append(region_img)
-        # random.seed(time.time())
-        # idx_obj = random.randint(0,self.num_ref_obj-1)
-        # obj_img = Image.open(self.list_ref_oimg_files[idx_obj]).convert('RGB')
-        # obj_img = self.global_transfo3(obj_img)
-
-        # start_point_h = int(np.random.choice(np.arange(0, self.end_points[0], 1), 1))
-        # start_point_w = int(np.random.choice(np.arange(0, self.end_points[1] - self.region_size[1], 1), 1))
-        # end_point_h = start_point_h + self.region_size[0]
-        # end_point_w = start_point_w + self.region_size[1]
-        # obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w] = 0.7*multi_scales[-2] + 0.3*obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w]
-        # roi_mask = torch.zeros_like(obj_img)[0]
-        # roi_mask[start_point_h:end_point_h, start_point_w:end_point_w] += 1.
-
-        # start_point_h = int(np.random.choice(np.arange(0, self.end_points[0], 1), 1))
-        # start_point_w = int(np.random.choice(np.arange(end_point_w, self.end_points[1], 1), 1))
-        # end_point_h = start_point_h + self.region_size[0]
-        # end_point_w = start_point_w + self.region_size[1]
-        # obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w] = 0.7*multi_scales[-1] + 0.3*obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w]
- 
-        # inst_mask = torch.zeros_like(obj_img)[0]
-        # inst_mask[start_point_h:end_point_h, start_point_w:end_point_w] += 1.
-
-        # multi_scales.append(obj_img)
-        # multi_scales.append(inst_mask)
-        # multi_scales.append(roi_mask)
-
-        return multi_scales
-    
-class DataAugmentation(object):
-    def __init__(self, size, crop_size, global_crops_scale, local_crops_scale, local_crops_number, ref_size=(256, 256)):
-        # ref_oimage_path='/mnt/hdd4/zhangshuai/data/pretrain_dataset/train/others'
-        # self.list_ref_oimg_files = []
-        # for file in os.listdir(ref_oimage_path):
-        #     file_path = os.path.join(ref_oimage_path, file)
-        #     self.list_ref_oimg_files.append(file_path)
-        # self.num_ref_obj = len(self.list_ref_oimg_files)
-        # 多人
-        self.multi_person_path = []
-        data_paths = ["data/AIC_multi_persons/ai_challenger_keypoint_train_20170909", "data/CrowdHuman/images", "data/coco_multi_persons/train2017"]
-        for data_path in data_paths:
-            for root, _, files in os.walk(data_path):
-                self.multi_person_path.extend([os.path.join(root, file) for file in files])
-        self.num_multi_person = len(self.multi_person_path)
-        
-        flip_and_color_jitter = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                p=0.8
-            ),
-            transforms.RandomGrayscale(p=0.2),
-        ])
-        normalize = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-        ])
-        ratio = (0.4,0.6)
-        if size == (224,224):
-            ratio = (0.75, 1.3333333333333333)
-        elif size == (256,192):
-            ratio = (0.4,0.6)
-        elif size == (256,128):
-            ratio = (0.4,0.6)
-        elif size == (384,128):
-            ratio = (0.25,0.4)
-        print(global_crops_scale, size, ratio)
-
-        self.global_transform = transforms.Compose([
-            transforms.RandomResizedCrop(size=size, scale=global_crops_scale, interpolation=3, ratio=ratio),  # 3 is bicubic
-            # transforms.RandomHorizontalFlip(),
-            flip_and_color_jitter,
-            misc.GaussianBlur(1.0),
-            normalize]
-        )
-        self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(size=size, scale=global_crops_scale, interpolation=3, ratio=ratio),
-            flip_and_color_jitter,
-            misc.GaussianBlur(0.1),
-            misc.Solarization(0.2),
-            normalize,
-        ])
-        self.global_transfo3 = transforms.Compose([
-            transforms.RandomResizedCrop(size=ref_size, scale=global_crops_scale, interpolation=3, ratio=(0.75, 1.3333333333333333)),
-            flip_and_color_jitter,
-            misc.GaussianBlur(0.1),
-            misc.Solarization(0.2),
-            normalize,
-        ])
-
-        self.local_crops_number = local_crops_number
-
-        self.local_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(size=crop_size, scale=local_crops_scale, interpolation=3, ratio=ratio),
-            flip_and_color_jitter,
-            misc.GaussianBlur(p=0.5),
-            normalize,
-        ])
-
-        self.local_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(size=crop_size, scale=(0.5, 0.75), interpolation=3, ratio=ratio),
-            flip_and_color_jitter,
-            misc.GaussianBlur(p=0.5),
-            normalize,
-        ])
-        
-        assert crop_size[0] < ref_size[0] and crop_size[1] < ref_size[1]
-        self.end_points = (ref_size[0]-crop_size[0]-1, ref_size[1]-crop_size[1]-1)
-        self.region_size = crop_size
-
-
-    def __call__(self, image):
-
-        multi_scales = []
-        aug_img_1 = self.global_transform(image)
-        # aug_img_2 = self.global_transfo2(image)
-        multi_scales.append(aug_img_1)
-        # multi_scales.append(aug_img_2)
-
-        for _ in range(self.local_crops_number):
-            multi_scales.append(self.local_transfo1(image))
-        # local_img = self.local_transfo1(image)
-
+        region_img = torch.nn.functional.interpolate(aug_img_1.unsqueeze(0), size=self.region_size).squeeze(0)
         random.seed(time.time())
-        idx_obj = random.randint(0,self.num_multi_person-1)
-        obj_img = Image.open(self.multi_person_path[idx_obj]).convert('RGB')
+        idx_obj = random.randint(0,self.num_ref_obj-1)
+        obj_img = Image.open(self.list_ref_oimg_files[idx_obj]).convert('RGB')
         obj_img = self.global_transfo3(obj_img)
-        
+
+        start_point_h = int(np.random.choice(np.arange(0, self.end_points[0], 1), 1))
+        start_point_w = int(np.random.choice(np.arange(0, self.end_points[1] - self.region_size[1], 1), 1))
+        end_point_h = start_point_h + self.region_size[0]
+        end_point_w = start_point_w + self.region_size[1]
+        obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w] = 0.7*multi_scales[-1] + 0.3*obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w]
+
+        start_point_h = int(np.random.choice(np.arange(0, self.end_points[0], 1), 1))
+        start_point_w = int(np.random.choice(np.arange(end_point_w, self.end_points[1], 1), 1))
+        end_point_h = start_point_h + self.region_size[0]
+        end_point_w = start_point_w + self.region_size[1]
+        obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w] = 0.7*region_img + 0.3*obj_img[:, start_point_h:end_point_h, start_point_w:end_point_w]
+ 
+
         multi_scales.append(obj_img)
 
         return multi_scales
@@ -621,25 +508,20 @@ class CSMKDLoss(nn.Module):
                 i_s_vv_atten = s_vv_atten.log()
                 qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_atten, t_qk_atten).sum(-1).mean()
                 vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_atten, t_vv_atten).sum(-1).mean()
-                
-                # if not math.isfinite(qk_loss.item()):
-                #     qk_loss = 0. * i_s_qk_atten.mean()
-                # if not math.isfinite(vv_loss.item()):
-                #     vv_loss = 0. * i_s_vv_atten.mean()
+
                 att_sim_loss += (qk_loss + vv_loss)
                 n_att_loss_terms += 1
-            # if s_feats_patch[iq].shape != t_feats_patch[iq].shape:
-            #     B, _, L = s_feats_patch[iq].shape
-            #     new_ph, new_pw = res[iq][0] // 16, res[iq][1] // 16
-            #     ph, pw = res[iq][0] // 32, res[iq][1] // 32
-            #     s_feats_patch[iq] = nn.functional.interpolate(
-            #         s_feats_patch[iq].reshape(B, ph, pw, L).permute(0, 3, 1, 2), # B, L, ph, pw
-            #         mode="bicubic",
-            #         size=(new_ph, new_pw)
-            #     ).reshape(B, L, new_ph*new_pw).permute(0, 2, 1)
+            if s_feats_patch[iq].shape != t_feats_patch[iq].shape:
+                B, _, L = s_feats_patch[iq].shape
+                new_ph, new_pw = res[iq][0] // 16, res[iq][1] // 16
+                ph, pw = res[iq][0] // 32, res[iq][1] // 32
+                s_feats_patch[iq] = nn.functional.interpolate(
+                    s_feats_patch[iq].reshape(B, ph, pw, L).permute(0, 3, 1, 2), # B, L, ph, pw
+                    mode="bicubic",
+                    size=(new_ph, new_pw)
+                ).reshape(B, L, new_ph*new_pw).permute(0, 2, 1)
             loss = nn.MSELoss(reduction="none")(s_feats_patch[iq], t_feats_patch[iq]).mean(-1).mean()
-            # if not math.isfinite(loss.item()):
-            #     loss = 0. * s_feats_patch[iq].mean()
+
             rep_sim_patch_loss += loss
             n_rep_patch_loss_terms += 1
                     

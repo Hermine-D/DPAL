@@ -287,16 +287,8 @@ class ExpertViT(VisionTransformer):
         return x, atten
 
     def forward(self, base_imgs, meta):
-        bs = base_imgs.shape[0]
-        msc_imgs = meta['region_imgs']
-        b_ph, b_pw = base_imgs.shape[2]//self.patch_embed.patch_size, base_imgs.shape[3]//self.patch_embed.patch_size
-        if meta['aug_img'] is not None:
-            base_inputs = torch.cat([base_imgs, meta['aug_img']])
-            len_base_inputs = 2
-        else:
-            base_inputs = base_imgs
-            len_base_inputs = 1
-        
+        base_inputs = base_imgs
+        len_base_inputs = 1
         outputs = {}
         
         #  single-person
@@ -312,16 +304,6 @@ class ExpertViT(VisionTransformer):
         b_feats, last_atten = self.forward_backbone(meta['crowd_imgs'])
         outputs['feats_from_teacher_patch'].append(b_feats[:,1:,:])
         outputs['qkv_atten'].append(last_atten)
-        # # single-person
-        # if msc_imgs:
-        #     len_msc_imgs= len(msc_imgs)
-        #     b_feats, last_atten = self.forward_backbone(torch.cat(msc_imgs))
-        #     outputs['feats_from_teacher'].extend(list(torch.chunk(b_feats[:,0,:], len_msc_imgs, dim=0)))
-        #     outputs['feats_from_teacher_patch'].extend(list(torch.chunk(b_feats[:,1:,:], len_msc_imgs, dim=0)))
-        #     qk_atten = torch.chunk(last_atten[0], len_msc_imgs, dim=0)
-        #     vv_atten = torch.chunk(last_atten[1], len_msc_imgs, dim=0)
-        #     for i in range(len_msc_imgs):
-        #         outputs['qkv_atten'].append([qk_atten[i], vv_atten[i]])
             
         return outputs
 
