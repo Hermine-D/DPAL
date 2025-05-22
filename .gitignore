@@ -5,6 +5,8 @@ temp
 .vscode
 
 1.py
+modelscope_load.py
+pyrightconfig.json
 
 preprocessing_theia/__pycache__/*
 preprocessing/__pycache__/*
