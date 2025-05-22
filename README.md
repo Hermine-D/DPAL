@@ -34,14 +34,6 @@ bash scripts/train_kd_path_moe_vit_tiny.sh
 ```sh
 bash scripts/train_kd_path_moe_vit_small.sh
 ```
-### Distill PATH-B to Swin-Ti.
-```sh
-bash scripts/train_kd_path_moe_swin_tiny.sh
-```
-### Distill PATH-B to Swin-S.
-```sh
-bash scripts/train_kd_path_moe_swin_small.sh
-```
 ### Distill PATH-L to ViT-Ti.
 ```sh
 bash scripts/train_kd_path_large_moe_vit_tiny.sh

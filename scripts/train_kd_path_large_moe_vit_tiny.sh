@@ -1,7 +1,7 @@
 #!/bin/bash
 DEBUG_ARG=""
 
-output_dir="work_dirs/lup1m_path-l_to_vit_tiny_from_cls_patch_atten_moe_v2"
+output_dir="work_dirs/lup1m_path-l_to_vit_tiny_from_global_local_realtion_moe"
 if [[ "$1" == "--debug" ]]; then
     echo "Running in debug mode"
     export CUDA_VISIBLE_DEVICES=0

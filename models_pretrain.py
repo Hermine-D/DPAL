@@ -331,40 +331,40 @@ class DPALKDViTMOEWrapper(nn.Module):
         moe_loss = torch.Tensor([0]).cuda()
         experts_loss = torch.Tensor([0]).cuda()
         num_aux_loss = 0
-        ########## Single-person cls + atten + patch
-        # atten
-        b_feats, _, _, aligned_atten = self.backbone(base_inputs, 0.)
-        qk_atten = torch.chunk(aligned_atten[0], len_base_inputs, dim=0)
-        vv_atten = torch.chunk(aligned_atten[1], len_base_inputs, dim=0)
-        aligned_attens = []
+        ########## Single-person
+        # realtion
+        b_feats, _, _, aligned_relation = self.backbone(base_inputs, 0.)
+        qk_relation = torch.chunk(aligned_relation[0], len_base_inputs, dim=0)
+        vv_relation = torch.chunk(aligned_relation[1], len_base_inputs, dim=0)
+        aligned_relations = []
         for i in range(len_base_inputs):
-            aligned_attens.append([qk_atten[i], vv_atten[i]])
-        # cls
+            aligned_relations.append([qk_relation[i], vv_relation[i]])
+        # global
         b_aligned_feats = b_feats[1]        
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_aligned_feats[:,:1,:], target_expert=0)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_cls_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
-        # patch
+        aligned_global_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
+        # local
         b_aligned_feats = b_feats[1]
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_aligned_feats[:,1:,:], target_expert=1)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_patch_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
+        aligned_local_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
         ########## Multi-person atten + patch
-        # atten
-        b_feats, _, _, aligned_atten = self.backbone(meta['crowd_imgs'], 0.)
-        aligned_attens.append(aligned_atten)
-        # patch
+        # relation
+        b_feats, _, _, aligned_relation = self.backbone(meta['crowd_imgs'], 0.)
+        aligned_relations.append(aligned_relation)
+        # local
         b_aligned_feats = b_feats[1]
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_aligned_feats[:,1:,:], target_expert=2)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_patch_feats.append(b_aligned_feats)
-        ########## Single person cls
+        aligned_local_feats.append(b_aligned_feats)
+        ########## Single person global
         if msc_imgs:
             len_msc_imgs = len(msc_imgs)
             for i in range(len_msc_imgs):
@@ -374,12 +374,11 @@ class DPALKDViTMOEWrapper(nn.Module):
                 moe_loss += aux_loss
                 experts_loss += i_experts_loss
                 num_aux_loss += 1
-                aligned_cls_feats.append(msc_aligned_feats)
-                
-        img_level_aligned_tokens = aligned_cls_feats
-        outputs['aligned_cls_feats'] = img_level_aligned_tokens
-        outputs['aligned_patch_feats'] = aligned_patch_feats
-        outputs['qkv_atten'] =  aligned_attens
+                aligned_global_feats.append(msc_aligned_feats)
+
+        outputs['aligned_global_feats'] = aligned_global_feats
+        outputs['aligned_local_feats'] = aligned_local_feats
+        outputs['relations'] =  aligned_relations
         moe_loss /= num_aux_loss
         experts_loss /= num_aux_loss
         return outputs, moe_loss, experts_loss
@@ -405,21 +404,21 @@ class DPALKDSWINMOEWrapper(nn.Module):
         moe_loss = torch.Tensor([0]).cuda()
         experts_loss = torch.Tensor([0]).cuda()
         num_aux_loss = 0
-        ########## Single-person cls + patch
+        ########## Single-person
         avg_pool, patch  = self.backbone.forward_student(base_inputs) # b_feats[-1]
         b_feats = torch.cat([avg_pool.unsqueeze(1), patch[-1].reshape(B, 768, (256//32)*(128//32)).permute(0,2,1)], dim=1)
-        # cls
+        # global
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[:,:1,:], target_expert=0)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_cls_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
+        aligned_global_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
         # patch
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[:,1:,:], target_expert=1)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_patch_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
+        aligned_local_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
         # ########## Multi-person patch
         avg_pool, patch = self.backbone.forward_student(meta['crowd_imgs'])
         b_feats = torch.cat([avg_pool.unsqueeze(1), patch[-1].reshape(B, 768, (256//32)*(256//32)).permute(0,2,1)], dim=1)
@@ -428,7 +427,7 @@ class DPALKDSWINMOEWrapper(nn.Module):
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_patch_feats.append(b_aligned_feats)        
+        aligned_local_feats.append(b_aligned_feats)        
         ########## Single-person cls
         if msc_imgs:
             len_msc_imgs = len(msc_imgs)
@@ -439,12 +438,11 @@ class DPALKDSWINMOEWrapper(nn.Module):
                 moe_loss += aux_loss
                 experts_loss += i_experts_loss
                 num_aux_loss += 1
-                aligned_cls_feats.append(msc_aligned_feats)
+                aligned_global_feats.append(msc_aligned_feats)
                 
-        img_level_aligned_tokens = aligned_cls_feats
-        outputs['aligned_cls_feats'] = img_level_aligned_tokens
-        outputs['aligned_patch_feats'] = aligned_patch_feats
-        outputs['qkv_atten'] =  None
+        outputs['aligned_global_feats'] = aligned_global_feats
+        outputs['aligned_local_feats'] = aligned_local_feats
+        outputs['relations'] =  None
         moe_loss /= num_aux_loss
         experts_loss /= num_aux_loss
         return outputs, moe_loss, experts_loss

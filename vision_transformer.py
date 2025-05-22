@@ -292,17 +292,17 @@ class ExpertViT(VisionTransformer):
         
         #  single-person
         b_feats, last_atten = self.forward_backbone(base_inputs)
-        outputs['feats_from_teacher'] = list(torch.chunk(b_feats[:,:1,:], len_base_inputs, dim=0))
-        outputs['feats_from_teacher_patch'] = list(torch.chunk(b_feats[:,1:,:], len_base_inputs, dim=0))
+        outputs['feats_from_teacher_global'] = list(torch.chunk(b_feats[:,:1,:], len_base_inputs, dim=0))
+        outputs['feats_from_teacher_local'] = list(torch.chunk(b_feats[:,1:,:], len_base_inputs, dim=0))
         qk_atten = torch.chunk(last_atten[0], len_base_inputs, dim=0)
         vv_atten = torch.chunk(last_atten[1], len_base_inputs, dim=0)
-        outputs['qkv_atten'] = []
+        outputs['relations'] = []
         for i in range(len_base_inputs):
-            outputs['qkv_atten'].append([qk_atten[i], vv_atten[i]])
+            outputs['relations'].append([qk_atten[i], vv_atten[i]])
         # multi-person
         b_feats, last_atten = self.forward_backbone(meta['crowd_imgs'])
-        outputs['feats_from_teacher_patch'].append(b_feats[:,1:,:])
-        outputs['qkv_atten'].append(last_atten)
+        outputs['feats_from_teacher_local'].append(b_feats[:,1:,:])
+        outputs['relations'].append(last_atten)
             
         return outputs
 

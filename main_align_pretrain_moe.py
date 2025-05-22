@@ -233,7 +233,7 @@ def main(args):
         p.requires_grad = False
     print(f"Student and Teacher are built: student is {args.model} network and teacher is {args.teacher_model} network.")
 
-    csm_kd_loss = CSMKDLoss().cuda()
+    dpal_kd_loss = DPALKDLoss().cuda()
 
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
@@ -255,7 +255,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         train_stats = train_one_epoch(
-            student, teacher, ema_teacher, ema_teacher_without_ddp, csm_kd_loss, momentum_schedule,
+            student, teacher, ema_teacher, ema_teacher_without_ddp, dpal_kd_loss, momentum_schedule,
             data_loader_train, optimizer, epoch, loss_scaler,
             log_writer=log_writer,
             args=args
@@ -285,7 +285,7 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_kd_loss, momentum_schedule,
+def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, dpal_kd_loss, momentum_schedule,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     epoch: int, loss_scaler,
                     log_writer=None,
@@ -320,13 +320,13 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
         with torch.cuda.amp.autocast():
             pred_t = teacher.forward(samples[0], meta)
             pred_s, moe_loss, experts_loss = student(samples[0], meta)
-            m_loss = csm_kd_loss(pred_s['aligned_cls_feats'], pred_s['aligned_patch_feats'], pred_s['qkv_atten'], pred_t['feats_from_teacher'], pred_t['feats_from_teacher_patch'], pred_t['qkv_atten'])
+            m_loss = dpal_kd_loss(pred_s['aligned_global_feats'], pred_s['aligned_local_feats'], pred_s['relations'], pred_t['feats_from_teacher_global'], pred_t['feats_from_teacher_local'], pred_t['relations'])
             if epoch < 20:
                 m_loss['moe_loss'] = 0.1 * moe_loss # 0.1
             else:
                 m_loss['moe_loss'] = 0.01 * moe_loss
             m_loss['experts_loss'] = experts_loss
-            loss = m_loss['align_rep_loss'] + m_loss['align_att_loss'] + m_loss['align_patch_loss'] + m_loss['moe_loss'] + m_loss['experts_loss']
+            loss = m_loss['align_global_loss'] + m_loss['align_relation_loss'] + m_loss['align_local_loss'] + m_loss['moe_loss'] + m_loss['experts_loss']
         
         loss_value = loss.item()
 
@@ -349,7 +349,7 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, csm_
                 param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
 
         torch.cuda.synchronize()
-        metric_logger.update(loss=loss_value, align_patch_loss=m_loss['align_patch_loss'].item(), align_rep_loss=m_loss['align_rep_loss'].item(), align_att_loss=m_loss['align_att_loss'].item(), moe_loss=m_loss['moe_loss'].item(), experts_loss=m_loss['experts_loss'].item())
+        metric_logger.update(loss=loss_value, align_patch_loss=m_loss['align_local_loss'].item(), align_rep_loss=m_loss['align_global_loss'].item(), align_att_loss=m_loss['align_relation_loss'].item(), moe_loss=m_loss['moe_loss'].item(), experts_loss=m_loss['experts_loss'].item())
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr)
 
@@ -478,40 +478,40 @@ class DataAugmentation(object):
 
         return multi_scales
 
-class CSMKDLoss(nn.Module):
+class DPALKDLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, s_feats, s_feats_patch, s_atten, t_feats, t_feats_patch, t_atten):
-        rep_sim_cls_loss = torch.Tensor([0]).cuda()
-        rep_sim_patch_loss = torch.Tensor([0]).cuda()
-        n_rep_cls_loss_terms = 0
-        n_rep_patch_loss_terms = 0
-        att_sim_loss = torch.Tensor([0]).cuda()
-        n_att_loss_terms = 0
-        # cls
-        for t_feat in t_feats: # 1 single
-            for s_feat in s_feats: # n+1
+    def forward(self, s_feats_global, s_feats_local, s_relations, t_feats_global, t_feats_local, t_relations):
+        rep_sim_global_loss = torch.Tensor([0]).cuda()
+        rep_sim_local_loss = torch.Tensor([0]).cuda()
+        n_rep_global_loss_terms = 0
+        n_rep_local_loss_terms = 0
+        relation_sim_loss = torch.Tensor([0]).cuda()
+        n_relation_loss_terms = 0
+        # global
+        for t_feat in t_feats_global: # 1 single
+            for s_feat in s_feats_global: # n+1
                 loss = nn.MSELoss(reduction="none")(s_feat, t_feat).mean(-1).mean()
                 # if not math.isfinite(loss.item()):
                 #     loss = 0. * s_feat.mean()
-                rep_sim_cls_loss += loss
-                n_rep_cls_loss_terms += 1
-        # patch + atten
+                rep_sim_global_loss += loss
+                n_rep_global_loss_terms += 1
+        # local + relation
         res = [(256,128),(256,256)]
-        for iq in range(len(t_feats_patch)): # 1 single + 1 multi
-            if s_atten and t_atten:
-                s_qk_atten, s_vv_atten = s_atten[iq]
-                t_qk_atten, t_vv_atten = t_atten[iq]
-                i_s_qk_atten = s_qk_atten.log()
-                i_s_vv_atten = s_vv_atten.log()
-                qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_atten, t_qk_atten).sum(-1).mean()
-                vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_atten, t_vv_atten).sum(-1).mean()
+        for iq in range(len(t_feats_local)): # 1 single + 1 multi
+            if s_relations and t_relations:
+                s_qk_relation, s_vv_relation = s_relations[iq]
+                t_qk_relation, t_vv_relation = t_relations[iq]
+                i_s_qk_relation = s_qk_relation.log()
+                i_s_vv_relation = s_vv_relation.log()
+                qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_relation, t_qk_relation).sum(-1).mean()
+                vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_relation, t_vv_relation).sum(-1).mean()
 
-                att_sim_loss += (qk_loss + vv_loss)
-                n_att_loss_terms += 1
-            if s_feats_patch[iq].shape != t_feats_patch[iq].shape:
-                B, _, L = s_feats_patch[iq].shape
+                relation_sim_loss += (qk_loss + vv_loss)
+                n_relation_loss_terms += 1
+            if s_feats_local[iq].shape != t_feats_local[iq].shape:
+                B, _, L = s_feats_local[iq].shape
                 new_ph, new_pw = res[iq][0] // 16, res[iq][1] // 16
                 ph, pw = res[iq][0] // 32, res[iq][1] // 32
                 s_feats_patch[iq] = nn.functional.interpolate(
@@ -519,17 +519,17 @@ class CSMKDLoss(nn.Module):
                     mode="bicubic",
                     size=(new_ph, new_pw)
                 ).reshape(B, L, new_ph*new_pw).permute(0, 2, 1)
-            loss = nn.MSELoss(reduction="none")(s_feats_patch[iq], t_feats_patch[iq]).mean(-1).mean()
+            loss = nn.MSELoss(reduction="none")(s_feats_local[iq], t_feats_local[iq]).mean(-1).mean()
 
-            rep_sim_patch_loss += loss
-            n_rep_patch_loss_terms += 1
+            rep_sim_local_loss += loss
+            n_rep_local_loss_terms += 1
                     
-        rep_sim_cls_loss /= n_rep_cls_loss_terms
-        rep_sim_patch_loss /= n_rep_patch_loss_terms
-        if n_att_loss_terms:
-            att_sim_loss /= n_att_loss_terms
+        rep_sim_global_loss /= n_rep_global_loss_terms
+        rep_sim_local_loss /= n_rep_local_loss_terms
+        if n_relation_loss_terms:
+            relation_sim_loss /= n_relation_loss_terms
         
-        return {'align_rep_loss':rep_sim_cls_loss, 'align_patch_loss':0.1*rep_sim_patch_loss, 'align_att_loss':0.1*att_sim_loss}
+        return {'align_global_loss':rep_sim_global_loss, 'align_local_loss':rep_sim_local_loss, 'align_relation_loss':relation_sim_loss}
     
 if __name__ == '__main__':
     args = get_args_parser()
