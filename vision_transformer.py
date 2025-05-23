@@ -5,6 +5,9 @@ import torch.nn as nn
 
 import collections.abc as container_abcs
 from itertools import repeat
+import sklearn.decomposition
+from sklearn.preprocessing import minmax_scale
+PCA = sklearn.decomposition.PCA(n_components=1)
 
 def _ntuple(n):
     def parse(x):
@@ -290,20 +293,28 @@ class ExpertViT(VisionTransformer):
         len_base_inputs = 1
         outputs = {}
         
-        #  single-person
+        #  single-person global local
         b_feats, last_atten = self.forward_backbone(base_inputs)
+        
+        # global
         outputs['feats_from_teacher_global'] = list(torch.chunk(b_feats[:,:1,:], len_base_inputs, dim=0))
-        outputs['feats_from_teacher_local'] = list(torch.chunk(b_feats[:,1:,:], len_base_inputs, dim=0))
-        qk_atten = torch.chunk(last_atten[0], len_base_inputs, dim=0)
-        vv_atten = torch.chunk(last_atten[1], len_base_inputs, dim=0)
-        outputs['relations'] = []
-        for i in range(len_base_inputs):
-            outputs['relations'].append([qk_atten[i], vv_atten[i]])
-        # multi-person
-        b_feats, last_atten = self.forward_backbone(meta['crowd_imgs'])
-        outputs['feats_from_teacher_local'].append(b_feats[:,1:,:])
-        outputs['relations'].append(last_atten)
-            
+
+        # local
+        chunk_b_feats_local = list(torch.chunk(b_feats[:,1:,:], len_base_inputs, dim=0))
+        outputs['shape_masks'] = []
+        outputs['feats_from_teacher_local'] = []
+        for feat_local in chunk_b_feats_local:
+            B,N,L = feat_local.shape
+            shape_mask = PCA.fit_transform(feat_local.reshape(B*N,L).cpu().detach().numpy())
+            shape_mask = minmax_scale(shape_mask)
+            outputs['shape_masks'].append(torch.tensor(shape_mask).reshape(B,N,1).cuda())
+            outputs['feats_from_teacher_local'].append(outputs['shape_masks'][-1]*feat_local)
+
+        # multi-person relation
+        b_feats, _ = self.forward_backbone(meta['crowd_imgs'])
+        relations_softmax = (((b_feats @ b_feats.transpose(-2, -1)) / (self.embed_dim ** 0.5))).softmax(dim=-1)
+        outputs['relations'] = [relations_softmax]
+        
         return outputs
 
 ######################################## vit ########################################

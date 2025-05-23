@@ -128,7 +128,7 @@ class LossMOEDecoder(nn.Module): # Three patterns
         if scores is not None:
             experts = experts * scores.permute(1,0).contiguous().unsqueeze(-1).unsqueeze(-1) # [topk, B, 192, 768] * [B, topk]
             experts = experts.sum(dim=0)
-            experts = experts / len(experts)
+            experts = experts / 256
         return experts
     
     def forward(self, x, target_expert, return_topk=False):

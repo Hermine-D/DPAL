@@ -319,7 +319,7 @@ def train_one_epoch(student, teacher, ema_teacher, ema_teacher_without_ddp, dpal
 
         with torch.cuda.amp.autocast():
             pred_t = teacher.forward(samples[0], meta)
-            pred_s, moe_loss, experts_loss = student(samples[0], meta)
+            pred_s, moe_loss, experts_loss = student(samples[0], meta, pred_t['shape_masks'])
             m_loss = dpal_kd_loss(pred_s['aligned_global_feats'], pred_s['aligned_local_feats'], pred_s['relations'], pred_t['feats_from_teacher_global'], pred_t['feats_from_teacher_local'], pred_t['relations'])
             if epoch < 20:
                 m_loss['moe_loss'] = 0.1 * moe_loss # 0.1
@@ -497,19 +497,9 @@ class DPALKDLoss(nn.Module):
                 #     loss = 0. * s_feat.mean()
                 rep_sim_global_loss += loss
                 n_rep_global_loss_terms += 1
-        # local + relation
+        # local
         res = [(256,128),(256,256)]
         for iq in range(len(t_feats_local)): # 1 single + 1 multi
-            if s_relations and t_relations:
-                s_qk_relation, s_vv_relation = s_relations[iq]
-                t_qk_relation, t_vv_relation = t_relations[iq]
-                i_s_qk_relation = s_qk_relation.log()
-                i_s_vv_relation = s_vv_relation.log()
-                qk_loss = nn.KLDivLoss(reduction="none")(i_s_qk_relation, t_qk_relation).sum(-1).mean()
-                vv_loss = nn.KLDivLoss(reduction="none")(i_s_vv_relation, t_vv_relation).sum(-1).mean()
-
-                relation_sim_loss += (qk_loss + vv_loss)
-                n_relation_loss_terms += 1
             if s_feats_local[iq].shape != t_feats_local[iq].shape:
                 B, _, L = s_feats_local[iq].shape
                 new_ph, new_pw = res[iq][0] // 16, res[iq][1] // 16
@@ -519,15 +509,20 @@ class DPALKDLoss(nn.Module):
                     mode="bicubic",
                     size=(new_ph, new_pw)
                 ).reshape(B, L, new_ph*new_pw).permute(0, 2, 1)
+            
             loss = nn.MSELoss(reduction="none")(s_feats_local[iq], t_feats_local[iq]).mean(-1).mean()
-
             rep_sim_local_loss += loss
             n_rep_local_loss_terms += 1
+        
+        # relation
+        for iq in range(len(t_relations)):
+            i_s_relation = s_relations[iq].log()
+            relation_sim_loss = nn.KLDivLoss(reduction="none")(i_s_relation, t_relations[iq]).sum(-1).mean()
+            n_relation_loss_terms += 1
                     
         rep_sim_global_loss /= n_rep_global_loss_terms
         rep_sim_local_loss /= n_rep_local_loss_terms
-        if n_relation_loss_terms:
-            relation_sim_loss /= n_relation_loss_terms
+        relation_sim_loss /= n_relation_loss_terms
         
         return {'align_global_loss':rep_sim_global_loss, 'align_local_loss':rep_sim_local_loss, 'align_relation_loss':relation_sim_loss}
     

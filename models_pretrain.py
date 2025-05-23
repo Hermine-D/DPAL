@@ -321,8 +321,9 @@ class DPALKDViTMOEWrapper(nn.Module):
         super(DPALKDViTMOEWrapper, self).__init__()
         self.backbone = DPALViT(**args)
         self.adapter = LossMOEDecoder(**args)
+        self.out_dim = args['out_dim']
     
-    def forward(self, base_imgs, meta):
+    def forward(self, base_imgs, meta, shape_masks):
         msc_imgs = meta['region_imgs']
         base_inputs = base_imgs
         len_base_inputs = 1
@@ -331,14 +332,9 @@ class DPALKDViTMOEWrapper(nn.Module):
         moe_loss = torch.Tensor([0]).cuda()
         experts_loss = torch.Tensor([0]).cuda()
         num_aux_loss = 0
-        ########## Single-person
-        # realtion
+        ########## Single-person global local
         b_feats, _, _, aligned_relation = self.backbone(base_inputs, 0.)
-        qk_relation = torch.chunk(aligned_relation[0], len_base_inputs, dim=0)
-        vv_relation = torch.chunk(aligned_relation[1], len_base_inputs, dim=0)
-        aligned_relations = []
-        for i in range(len_base_inputs):
-            aligned_relations.append([qk_relation[i], vv_relation[i]])
+        
         # global
         b_aligned_feats = b_feats[1]        
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_aligned_feats[:,:1,:], target_expert=0)
@@ -346,24 +342,29 @@ class DPALKDViTMOEWrapper(nn.Module):
         experts_loss += i_experts_loss
         num_aux_loss += 1
         aligned_global_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
+
         # local
         b_aligned_feats = b_feats[1]
         b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_aligned_feats[:,1:,:], target_expert=1)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_local_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
+        chunk_b_aligned_feats = torch.chunk(b_aligned_feats, len_base_inputs, dim=0)
+
+        aligned_local_feats = []
+        for i in range(len_base_inputs):
+            aligned_local_feats.append(shape_masks[i]*chunk_b_aligned_feats[i])
+        
         ########## Multi-person atten + patch
         # relation
-        b_feats, _, _, aligned_relation = self.backbone(meta['crowd_imgs'], 0.)
-        aligned_relations.append(aligned_relation)
-        # local
-        b_aligned_feats = b_feats[1]
-        b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_aligned_feats[:,1:,:], target_expert=2)
+        b_feats, _, _, _ = self.backbone(meta['crowd_imgs'], 0.)
+        b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[1], target_expert=2)
         moe_loss += aux_loss
         experts_loss += i_experts_loss
         num_aux_loss += 1
-        aligned_local_feats.append(b_aligned_feats)
+        aligned_relation_softmax = ((b_aligned_feats @ b_aligned_feats.transpose(-2, -1)) / (self.out_dim ** 0.5)).softmax(dim=-1)
+        aligned_relations = [aligned_relation_softmax] 
+
         ########## Single person global
         if msc_imgs:
             len_msc_imgs = len(msc_imgs)
@@ -379,70 +380,6 @@ class DPALKDViTMOEWrapper(nn.Module):
         outputs['aligned_global_feats'] = aligned_global_feats
         outputs['aligned_local_feats'] = aligned_local_feats
         outputs['relations'] =  aligned_relations
-        moe_loss /= num_aux_loss
-        experts_loss /= num_aux_loss
-        return outputs, moe_loss, experts_loss
-
-from swin_transformer import SwinTransformer
-class DPALKDSWINMOEWrapper(nn.Module):
-    def __init__(self, img_size, backbone="swin_tiny", **args):
-        super(DPALKDSWINMOEWrapper, self).__init__()
-        if backbone == "swin_tiny":
-            self.backbone = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24), drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0)
-        elif backbone == "swin_small":
-            self.backbone = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=96, depths=(2, 2, 18, 2), num_heads=(3, 6, 12, 24), drop_path_rate=0.1, drop_rate=0.0, attn_drop_rate=0.0)
-        self.adapter = LossMOEDecoder(**args)
-    
-    def forward(self, base_imgs, meta):
-        B,_,_,_ = base_imgs.shape
-        msc_imgs = meta['region_imgs']
-
-        base_inputs = base_imgs
-        len_base_inputs = 1
-        
-        outputs = {}
-        moe_loss = torch.Tensor([0]).cuda()
-        experts_loss = torch.Tensor([0]).cuda()
-        num_aux_loss = 0
-        ########## Single-person
-        avg_pool, patch  = self.backbone.forward_student(base_inputs) # b_feats[-1]
-        b_feats = torch.cat([avg_pool.unsqueeze(1), patch[-1].reshape(B, 768, (256//32)*(128//32)).permute(0,2,1)], dim=1)
-        # global
-        b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[:,:1,:], target_expert=0)
-        moe_loss += aux_loss
-        experts_loss += i_experts_loss
-        num_aux_loss += 1
-        aligned_global_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
-        # patch
-        b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[:,1:,:], target_expert=1)
-        moe_loss += aux_loss
-        experts_loss += i_experts_loss
-        num_aux_loss += 1
-        aligned_local_feats = list(torch.chunk(b_aligned_feats, len_base_inputs, dim=0))
-        # ########## Multi-person patch
-        avg_pool, patch = self.backbone.forward_student(meta['crowd_imgs'])
-        b_feats = torch.cat([avg_pool.unsqueeze(1), patch[-1].reshape(B, 768, (256//32)*(256//32)).permute(0,2,1)], dim=1)
-        # patch
-        b_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(b_feats[:,1:,:], target_expert=2)
-        moe_loss += aux_loss
-        experts_loss += i_experts_loss
-        num_aux_loss += 1
-        aligned_local_feats.append(b_aligned_feats)        
-        ########## Single-person cls
-        if msc_imgs:
-            len_msc_imgs = len(msc_imgs)
-            for i in range(len_msc_imgs):
-                avg_pool, patch = self.backbone.forward_student(msc_imgs[i])
-                msc_feats = torch.cat([avg_pool.unsqueeze(1), patch[-1].reshape(B, 768, (128//32)*(96//32)).permute(0,2,1)], dim=1)
-                msc_aligned_feats, _, aux_loss, i_experts_loss = self.adapter(msc_feats[:,:1,:], target_expert=0)
-                moe_loss += aux_loss
-                experts_loss += i_experts_loss
-                num_aux_loss += 1
-                aligned_global_feats.append(msc_aligned_feats)
-                
-        outputs['aligned_global_feats'] = aligned_global_feats
-        outputs['aligned_local_feats'] = aligned_local_feats
-        outputs['relations'] =  None
         moe_loss /= num_aux_loss
         experts_loss /= num_aux_loss
         return outputs, moe_loss, experts_loss
@@ -478,14 +415,4 @@ def DPAL_kd_vit_base_patch16_moe_path_large(**kwargs):
         num_heads=12, num_heads_in_last_block=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), 
         align_num_heads=16, out_dim=1024, inter_dim=192, **kwargs)
-    return model
-
-########## swin_tiny
-def DPAL_kd_swin_tiny_patch16_moe(**kwargs):
-    model = DPALKDSWINMOEWrapper(backbone = "swin_tiny", embed_dim=768, mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), align_num_heads=16, inter_dim=192, **kwargs)
-    return model
-
-########## swin_small
-def DPAL_kd_swin_small_patch16_moe(**kwargs):
-    model = DPALKDSWINMOEWrapper(backbone = "swin_small", embed_dim=768, mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), align_num_heads=16, inter_dim=192, **kwargs)
     return model
